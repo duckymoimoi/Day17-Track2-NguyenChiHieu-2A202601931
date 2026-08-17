@@ -46,6 +46,7 @@ phải giảm, `files` phải giảm, và `result hash` phải GIỮ NGUYÊN.
 from __future__ import annotations
 
 import pathlib
+import shutil
 import sys
 
 import duckdb
@@ -63,27 +64,38 @@ def main() -> int:
     n_src = len(list(SRC.glob("*.parquet")))
     print(f"  nguồn : {SRC}  ({n_src:,} file)")
 
-    # TODO(nhiệm vụ 4): hiện thực khung COPY ... TO ... ở phần docstring.
-    #
-    #   con.execute(f"""
-    #       copy (
-    #           select * from read_parquet('{SRC}/*.parquet')
-    #           order by ...
-    #       ) to '{DST}' (
-    #           format parquet,
-    #           partition_by (...),
-    #           overwrite_or_ignore,
-    #           row_group_size ...
-    #       )
-    #   """)
-    #
-    # Sau đó kiểm tra không mất hàng nào:
-    #
-    #   assert <số row dataset cũ> == <số row dataset mới>
+    n_rows_src = con.execute(
+        f"select count(*) from read_parquet('{SRC}/*.parquet')"
+    ).fetchone()[0]
 
-    print("\n  tools/compact.py chưa được hiện thực — đây là nhiệm vụ 4.")
-    print("  Mở file này, đọc phần KHUNG THỰC HIỆN ở đầu file và điền vào TODO.")
-    print("  Hướng dẫn từng bước: GUIDE.md mục 4.\n")
+    # Ghi lại từ đầu để lệnh compact có tính idempotent. Partition theo ngày
+    # (14 giá trị) giúp DuckDB bỏ qua file trước khi mở; trong mỗi partition,
+    # customer_name được xếp liền nhau để min/max của row group có ích.
+    shutil.rmtree(DST, ignore_errors=True)
+    con.execute(f"""
+        copy (
+            select *
+            from read_parquet('{SRC}/*.parquet')
+            order by event_date, customer_name, event_time
+        ) to '{DST}' (
+            format parquet,
+            partition_by (event_date),
+            overwrite_or_ignore,
+            row_group_size 5000
+        )
+    """)
+
+    n_rows_dst = con.execute(
+        f"select count(*) from read_parquet('{DST}/**/*.parquet', "
+        "hive_partitioning = true)"
+    ).fetchone()[0]
+    assert n_rows_src == n_rows_dst, (
+        f"compact làm thay đổi số hàng: {n_rows_src:,} != {n_rows_dst:,}"
+    )
+
+    n_dst = len(list(DST.glob("**/*.parquet")))
+    print(f"  đích  : {DST}  ({n_dst:,} file)")
+    print(f"  số hàng giữ nguyên: {n_rows_dst:,}\n")
     return 0
 
 
